@@ -18,7 +18,7 @@
     minDelaySec: 5,
     maxDelaySec: 300,
     // shorter delay when moving on to the next time in the same round
-    nextTripDelayMs: 2500,
+    nextTripDelayMs: 700,
     // max run length in minutes
     maxRunMinutes: 300,
     hardReloadEvery: 25, // full reload every N soft retries, to refresh the token
@@ -163,7 +163,7 @@
   }
 
   // DOM helpers
-  function waitFor(fn, timeoutMs, interval = 300) {
+  function waitFor(fn, timeoutMs, interval = 100) {
     return new Promise((resolve) => {
       const deadline = Date.now() + timeoutMs;
       const tick = () => {
@@ -242,7 +242,7 @@
     for (const target of [span, input.closest('label'), input]) {
       if (!target) continue;
       target.click();
-      await new Promise((r) => setTimeout(r, 250));
+      await new Promise((r) => setTimeout(r, 120));
       if (input.checked) return true;
     }
     return false;
@@ -479,7 +479,7 @@
     if (back && visible(back)) {
       setStatus('Back to results...');
       back.click();
-      setTimeout(runAttempt, 1500);
+      setTimeout(runAttempt, 400);
       return true;
     }
     if (resultCount() > 0) {
@@ -794,7 +794,7 @@
       min: CONFIG.minDelaySec,
       max: CONFIG.maxDelaySec,
     });
-    delayField.input.title = `Seconds between searches (min ${CONFIG.minDelaySec}), randomised up to x1.8`;
+    delayField.input.title = `Seconds between rounds (min ${CONFIG.minDelaySec}), randomised up to x1.8`;
     const runField = mkField('Run (min)', 'runMinutes', 'number', null, { min: 1, max: CONFIG.maxRunMinutes });
     runField.input.title = `Stop after this many minutes (max ${CONFIG.maxRunMinutes})`;
 
@@ -846,6 +846,6 @@
     }, 30_000).then(settleSale);
   } else if (isActive() && !isDone()) {
     setStatus(`Resuming - attempt ${attempts() + 1}...`);
-    setTimeout(runAttempt, 2500);
+    setTimeout(runAttempt, 1000);
   }
 })();

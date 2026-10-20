@@ -12,7 +12,7 @@ Keeps retrying a cp.pt booking for one or more departures and pings your phone (
 1. Install the ntfy app on your phone.
 2. On cp.pt, search your route and open the results page. The watcher panel appears top-right.
 3. **Use this page** - saves it as the page the watcher resets to (also fills the date).
-4. **Date** / **Departs** - the train(s) you want, 24h departure times separated by commas, in order of preference (e.g. `08:15, 19:39, 21:10`). Each round it tries them in that order. When one is full it moves to the next after ~2-4 s, with no new search. The full wait only comes after every time has been tried. It stops at the first seat it secures.
+4. **Date** / **Departs** - the train(s) you want, 24h departure times separated by commas, in order of preference (e.g. `08:15, 19:39, 21:10`). Each round it tries them in that order. When one is full it moves to the next after about a second, with no new search. The full wait only comes after every time has been tried. It stops at the first seat it secures.
 5. **ntfy topic** - press **New** for a random topic and subscribe to it in the app. Topics on ntfy.sh are public by name, so keep it hard to guess.
 6. **ntfy token** - only if your topic is protected (an ntfy.sh access token, starts with `tk_`). Leave empty otherwise.
 7. **Start at** - optional; waits until that time before the first attempt.
