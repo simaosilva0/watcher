@@ -17,6 +17,8 @@
     // plus up to 80% random jitter
     minDelaySec: 5,
     maxDelaySec: 300,
+    // shorter delay when moving on to the next time in the same round
+    nextTripDelayMs: 2500,
     // max run length in minutes
     maxRunMinutes: 300,
     hardReloadEvery: 25, // full reload every N soft retries, to refresh the token
@@ -43,7 +45,7 @@
   const settings = {
     searchUrl: '', // the results page to reset to
     date: '', // YYYY-MM-DD, overrides the URL's startDate
-    targetTime: '', // HH:MM departure
+    targetTime: '', // HH:MM departures, comma-separated, in priority order
     ntfyTopic: '',
     ntfyToken: '', // optional, for protected topics
     startAt: '', // optional HH:MM to hold off until
@@ -66,6 +68,19 @@
     return u.href;
   }
 
+  // "8:15, 19:39" -> ['08:15', '19:39'], null if something is invalid
+  function parseTimes(str) {
+    const out = [];
+    for (const part of String(str || '').split(/[,;\s]+/).filter(Boolean)) {
+      const m = /^([01]?\d|2[0-3])[:h.]?([0-5]\d)$/.exec(part);
+      if (!m) return null;
+      const t = `${m[1].padStart(2, '0')}:${m[2]}`;
+      if (!out.includes(t)) out.push(t);
+    }
+    return out;
+  }
+  const targets = () => parseTimes(settings.targetTime) || [];
+
   const onTargetPage = () =>
     /resultado-pesquisa/.test(location.pathname) &&
     new URL(location.href).searchParams.get('startDate') === settings.date;
@@ -79,7 +94,20 @@
     soft: 'cp_watch_soft',
     backoff: 'cp_watch_backoff',
     endsAt: 'cp_watch_ends_at',
+    round: 'cp_watch_round', // departures not yet tried in this pass
+    current: 'cp_watch_current', // departure being booked right now
   };
+
+  // a round = one pass over all the departure times
+  const roundLeft = () => {
+    try {
+      return JSON.parse(sessionStorage.getItem(K.round) || '[]');
+    } catch (_) {
+      return [];
+    }
+  };
+  const setRound = (list) => sessionStorage.setItem(K.round, JSON.stringify(list));
+  const current = () => sessionStorage.getItem(K.current) || settings.targetTime;
 
   const isActive = () => sessionStorage.getItem(K.active) === 'true';
   const isDone = () => sessionStorage.getItem(K.done) === 'true';
@@ -162,10 +190,10 @@
   // the trip row
   const TIME_IN_LABEL = /partida\s*[àa]s\s*(\d{1,2}:\d{2})/i;
 
-  function findTargetItem() {
+  function findItem(time) {
     for (const li of document.querySelectorAll('li[class*="result-item"]')) {
       const m = (li.getAttribute('aria-label') || '').match(TIME_IN_LABEL);
-      if (m && m[1].startsWith(settings.targetTime)) return li;
+      if (m && m[1].padStart(5, '0') === time) return li;
     }
     return null;
   }
@@ -259,9 +287,11 @@
         return;
       }
 
-      // 1. find the trip
-      const li = await waitFor(findTargetItem, CONFIG.resultsTimeoutMs);
-      if (!li) {
+      // 1. find the trips
+      const times = targets();
+      const listed = await waitFor(() => times.some(findItem) || null, CONFIG.resultsTimeoutMs);
+      if (!listed) {
+        setRound([]); // start the next round from the top
         if (looksBlocked()) {
           bumpBackoff();
           setStatus(`Attempt ${n} - blocked or throttled.`);
@@ -276,17 +306,37 @@
           setStatus(`Attempt ${n} - no results returned.`);
         } else {
           clearBackoff();
-          setStatus(`Attempt ${n} - ${settings.targetTime} not listed.`);
+          setStatus(`Attempt ${n} - ${times.join(', ')} not listed.`);
         }
         return scheduleRetry();
       }
 
       clearBackoff();
 
-      if (isSoldOut(li)) {
-        setStatus(`Attempt ${n} - marked sold out.`);
+      // next time in this round that is listed and not sold out
+      let round = roundLeft().filter((t) => times.includes(t));
+      if (round.length === 0) round = [...times];
+      let time = null;
+      let li = null;
+      const skipped = [];
+      while (round.length && !li) {
+        const t = round.shift();
+        const item = findItem(t);
+        if (item && !isSoldOut(item)) {
+          time = t;
+          li = item;
+        } else {
+          skipped.push(t);
+        }
+      }
+      setRound(round);
+
+      if (!li) {
+        setStatus(`Attempt ${n} - ${skipped.join(', ')} sold out or not listed.`);
         return scheduleRetry();
       }
+      sessionStorage.setItem(K.current, time);
+      setStatus(`Attempt ${n} - trying ${time}...`);
 
       li.scrollIntoView({ behavior: 'smooth', block: 'center' });
 
@@ -306,7 +356,7 @@
 
       // in checkout, stop the retry timer so it doesn't navigate away
       stop();
-      setStatus('Selected - opening purchase...');
+      setStatus(`Selected ${time} - opening purchase...`);
 
       // 3. Comprar
       const buy = await waitFor(buyNavButton, CONFIG.stepTimeoutMs);
@@ -371,17 +421,17 @@
     if (verdict === 'ok') {
       sessionStorage.setItem(K.done, 'true');
       stop();
-      setStatus('Seat secured - go pay.');
+      setStatus(`Seat secured on the ${current()} - go pay.`);
       await notify(
         'CP seat secured',
-        `The ${settings.targetTime} train on ${settings.date} is held in checkout. Pay now, it expires.`,
+        `The ${current()} train on ${settings.date} is held in checkout. Pay now, it expires.`,
         { priority: 'high' }
       );
       return;
     }
 
     if (verdict === 'fail') {
-      setStatus(`Attempt ${attempts()} - no seat (sale rejected).`);
+      setStatus(`Attempt ${attempts()} - no seat on the ${current()} (sale rejected).`);
       return resumeSilently();
     }
 
@@ -392,6 +442,7 @@
     // debug info for the notification
     const seen = [
       `v${chrome.runtime.getManifest().version}`,
+      `train ${current()}`,
       `page ${location.pathname}`,
       `lang ${document.documentElement.lang || '?'}`,
       `/sale ${lastSale ? lastSale.status : 'not seen'}`,
@@ -441,7 +492,10 @@
   function scheduleRetry() {
     if (!isActive() || isDone()) return;
 
-    const base = Number(settings.delaySec) * 1000 * (1 + Math.random() * 0.8);
+    // short delay if there are still times left in this round
+    const nextTrip = roundLeft().length > 0;
+    const gap = nextTrip ? CONFIG.nextTripDelayMs : Number(settings.delaySec) * 1000;
+    const base = gap * (1 + Math.random() * 0.8);
     const level = backoffLevel();
     const delay = Math.min(base * Math.pow(CONFIG.backoffFactor, level), CONFIG.maxBackoffMs);
     const readyAt = Date.now() + delay;
@@ -449,7 +503,13 @@
     clearInterval(countdownTimer);
     countdownTimer = setInterval(() => {
       const left = Math.max(0, Math.round((readyAt - Date.now()) / 1000));
-      setSub(level > 0 ? `Backing off - ${left}s` : `Retrying in ${left}s`);
+      setSub(
+        level > 0
+          ? `Backing off - ${left}s`
+          : nextTrip
+          ? `Next: ${roundLeft()[0]} in ${left}s`
+          : `Retrying in ${left}s`
+      );
       if (left === 0) clearInterval(countdownTimer);
     }, 1000);
 
@@ -480,7 +540,7 @@
   function missingSetting() {
     if (!settings.searchUrl) return 'start page';
     if (!settings.date) return 'train date';
-    if (!settings.targetTime) return 'departure time';
+    if (targets().length === 0) return 'departure time';
     if (!settings.ntfyTopic) return 'ntfy topic';
     return null;
   }
@@ -503,6 +563,8 @@
     sessionStorage.removeItem(K.done);
     sessionStorage.removeItem(K.phase);
     sessionStorage.removeItem(K.soft);
+    sessionStorage.removeItem(K.round);
+    sessionStorage.removeItem(K.current);
     clearBackoff();
     sessionStorage.setItem(K.active, 'true');
     paintButton();
@@ -537,7 +599,7 @@
 
   function reset() {
     stop();
-    for (const k of [K.attempts, K.done, K.phase, K.soft]) sessionStorage.removeItem(k);
+    for (const k of [K.attempts, K.done, K.phase, K.soft, K.round, K.current]) sessionStorage.removeItem(k);
     clearBackoff();
     setStatus('Idle.');
   }
@@ -590,11 +652,12 @@
     span.style.cssText = 'width:62px;flex:none;opacity:.75;';
     const input = document.createElement('input');
     // type=time shows AM/PM on some locales, so times are text fields
-    input.type = type === 'hhmm' ? 'text' : type;
+    input.type = type === 'hhmm' || type === 'hhmmList' ? 'text' : type;
     if (type === 'hhmm') {
       input.placeholder = 'HH:MM';
       input.maxLength = 5;
     }
+    if (type === 'hhmmList') input.placeholder = 'HH:MM, HH:MM...';
     input.autocomplete = 'off';
     input.value = settings[key];
     input.style.cssText = INPUT_CSS;
@@ -612,6 +675,14 @@
           return setStatus(`${label}: use 24h HH:MM, e.g. 19:39.`);
         }
         input.value = `${m[1].padStart(2, '0')}:${m[2]}`;
+      }
+      if (type === 'hhmmList') {
+        const list = parseTimes(input.value);
+        if (!list) {
+          input.value = settings[key];
+          return setStatus(`${label}: 24h times separated by commas, e.g. 08:15, 19:39.`);
+        }
+        input.value = list.join(', ');
       }
       if (key === 'ntfyToken' && input.value.trim() && !/^tk_\w+$/.test(input.value.trim())) {
         input.value = settings[key];
@@ -700,7 +771,8 @@
     pageRow.append(pageEl, useBtn);
 
     const dateField = mkField('Date', 'date', 'date');
-    const timeField = mkField('Departs', 'targetTime', 'hhmm');
+    const timeField = mkField('Departs', 'targetTime', 'hhmmList');
+    timeField.input.title = 'One or more departures, in order of preference. Stops at the first seat secured.';
 
     const genBtn = mkButton('New', () => {
       const hex = [...crypto.getRandomValues(new Uint8Array(6))].map((b) => b.toString(16).padStart(2, '0')).join('');
