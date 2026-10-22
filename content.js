@@ -26,6 +26,13 @@
     // backoff
     backoffFactor: 2,
     maxBackoffMs: 300_000,
+    // on an empty results page the backoff doesn't go past this level
+    maxEmptyBackoffLevel: 2,
+
+    // watchdogs
+    // reload the search if nothing happens for this long
+    stallMs: 120_000,
+    heartbeatMs: 20_000,
 
     // timeouts
     resultsTimeoutMs: 15_000,
@@ -96,6 +103,9 @@
     endsAt: 'cp_watch_ends_at',
     round: 'cp_watch_round', // departures not yet tried in this pass
     current: 'cp_watch_current', // departure being booked right now
+    sale: 'cp_watch_sale', // last /sale result, kept across navigations
+    offPage: 'cp_watch_off_page', // consecutive loads that landed off the results page
+    startsAt: 'cp_watch_starts_at', // "Start at" as a timestamp, so a reload keeps waiting
   };
 
   // a round = one pass over all the departure times
@@ -121,12 +131,16 @@
   let startTimer = null;
   let busy = false;
   let lastSale = null; // { ok, status, at } from inject.js
+  let lastProgress = Date.now();
+  let nextActionAt = 0; // next scheduled retry/start
 
   window.addEventListener('message', (e) => {
     if (e.source !== window) return;
     const d = e.data;
     if (!d || d.__cpWatchSale !== true) return;
     lastSale = { ok: d.ok, status: d.status, at: Date.now() };
+    // keep it in case the page navigates away
+    sessionStorage.setItem(K.sale, JSON.stringify(lastSale));
     console.log('[cp-watch] /sale responded', d.status, d.ok ? '-> seat secured' : '-> no seat');
   });
 
@@ -292,6 +306,11 @@
       const listed = await waitFor(() => times.some(findItem) || null, CONFIG.resultsTimeoutMs);
       if (!listed) {
         setRound([]); // start the next round from the top
+        if (!/resultado-pesquisa/.test(location.pathname)) {
+          // got sent somewhere else (home page etc)
+          setStatus(`Attempt ${n} - off the results page, going back...`);
+          return recoverOffPage();
+        }
         if (looksBlocked()) {
           bumpBackoff();
           setStatus(`Attempt ${n} - blocked or throttled.`);
@@ -302,8 +321,9 @@
             });
           }
         } else if (resultCount() === 0) {
-          bumpBackoff();
-          setStatus(`Attempt ${n} - no results returned.`);
+          // cp.pt sometimes says "Não foram encontrados resultados" for trains that exist
+          if (backoffLevel() < CONFIG.maxEmptyBackoffLevel) bumpBackoff();
+          setStatus(`Attempt ${n} - cp.pt returned an empty list, reloading.`);
         } else {
           clearBackoff();
           setStatus(`Attempt ${n} - ${times.join(', ')} not listed.`);
@@ -312,6 +332,7 @@
       }
 
       clearBackoff();
+      sessionStorage.removeItem(K.offPage);
 
       // next time in this round that is listed and not sold out
       let round = roundLeft().filter((t) => times.includes(t));
@@ -354,8 +375,9 @@
         }
       }
 
-      // in checkout, stop the retry timer so it doesn't navigate away
-      stop();
+      // in checkout, stop the timers but keep the run active so it picks up
+      // again if cp.pt redirects somewhere else
+      pauseTimers();
       setStatus(`Selected ${time} - opening purchase...`);
 
       // 3. Comprar
@@ -369,16 +391,12 @@
       setStatus('Confirming...');
 
       if (CONFIG.acceptTerms && !(await tickTerms(modal))) {
-        sessionStorage.setItem(K.done, 'true');
-        setStatus('Could not tick the terms box.');
-        return notify('CP watcher paused', 'Checkout modal is open. Tick the terms box yourself.', {
-          priority: 'high',
-          tags: 'warning',
-        });
+        return resumeAfterFailure('Could not tick the terms box.');
       }
 
       if (!CONFIG.autoAdvanceToPayment) {
         sessionStorage.setItem(K.done, 'true');
+        stop();
         setStatus('Ready - press "Avançar para compra".');
         return notify('CP watcher paused', 'Modal is ready. Press "Avançar para compra".', {
           priority: 'high',
@@ -387,19 +405,14 @@
       }
 
       const adv = await waitFor(() => advanceButton(modal), CONFIG.stepTimeoutMs);
-      if (!adv) {
-        sessionStorage.setItem(K.done, 'true');
-        setStatus('Advance button stayed disabled.');
-        return notify('CP watcher paused', 'Modal is ticked but stuck. Finish it manually.', {
-          priority: 'high',
-          tags: 'warning',
-        });
-      }
+      if (!adv) return resumeAfterFailure('"Avançar para compra" stayed disabled.');
 
       // 5. submit and read the verdict
       setStatus('Submitting sale...');
       sessionStorage.setItem(K.phase, 'sale');
+      heartbeat(); // background leaves the tab alone during the sale
       lastSale = null;
+      sessionStorage.removeItem(K.sale);
       adv.click();
 
       const verdict = await waitFor(() => {
@@ -435,24 +448,31 @@
       return resumeSilently();
     }
 
-    // no clear answer, stop so we don't risk buying twice
-    sessionStorage.setItem(K.done, 'true');
-    stop();
-    setStatus('Sale outcome unclear - check this tab.');
-    // debug info for the notification
-    const seen = [
-      `v${chrome.runtime.getManifest().version}`,
-      `train ${current()}`,
-      `page ${location.pathname}`,
-      `lang ${document.documentElement.lang || '?'}`,
-      `/sale ${lastSale ? lastSale.status : 'not seen'}`,
-      `"${((document.querySelector('main') || document.body || {}).innerText || '').replace(/\s+/g, ' ').trim().slice(0, 160)}"`,
-    ].join(' - ');
-    console.log('[cp-watch] unclear sale:', seen);
-    await notify('CP watcher needs you', `Submitted the sale but got no clear answer. Check the tab.\n${seen}`, {
-      priority: 'high',
-      tags: 'warning',
-    });
+    // no 2xx from /sale and not on checkout, nothing was booked. keep going
+    console.log('[cp-watch] no sale verdict:', location.pathname, lastSale ? lastSale.status : '/sale not seen');
+    setStatus(`Attempt ${attempts()} - no answer from cp.pt for the ${current()}, retrying.`);
+    resumeSilently();
+  }
+
+  // not on the results page anymore, go back (waits longer each time)
+  function recoverOffPage() {
+    pauseTimers();
+    const n = parseInt(sessionStorage.getItem(K.offPage) || '0', 10) + 1;
+    sessionStorage.setItem(K.offPage, String(n));
+    if (n === 6) {
+      notify('CP watcher bounced', 'cp.pt keeps sending the watcher away from the results. Still retrying.', {
+        priority: 'default',
+        tags: 'warning',
+      });
+    }
+    const delay = Math.min(1000 * Math.pow(2, n - 1), CONFIG.maxBackoffMs) * (1 + Math.random() * 0.5);
+    setSub(`Back to results in ${Math.round(delay / 1000)}s`);
+    nextActionAt = Date.now() + delay;
+    retryTimer = setTimeout(() => {
+      if (!isActive() || isDone()) return;
+      sessionStorage.setItem(K.soft, '0');
+      location.href = searchUrl();
+    }, delay);
   }
 
   function resumeSilently() {
@@ -463,9 +483,8 @@
     scheduleRetry();
   }
 
-  async function resumeAfterFailure(reason) {
-    setStatus(reason);
-    await notify('CP watcher hiccup', `${reason} Retrying.`, { priority: 'default', tags: 'warning' });
+  function resumeAfterFailure(reason) {
+    setStatus(`${reason} Retrying.`);
     resumeSilently();
   }
 
@@ -499,6 +518,7 @@
     const level = backoffLevel();
     const delay = Math.min(base * Math.pow(CONFIG.backoffFactor, level), CONFIG.maxBackoffMs);
     const readyAt = Date.now() + delay;
+    nextActionAt = readyAt;
 
     clearInterval(countdownTimer);
     countdownTimer = setInterval(() => {
@@ -565,14 +585,23 @@
     sessionStorage.removeItem(K.soft);
     sessionStorage.removeItem(K.round);
     sessionStorage.removeItem(K.current);
+    sessionStorage.removeItem(K.sale);
+    sessionStorage.removeItem(K.offPage);
     clearBackoff();
     sessionStorage.setItem(K.active, 'true');
     paintButton();
 
     const wait = msUntilStartAt();
     sessionStorage.setItem(K.endsAt, String(Date.now() + wait + Number(settings.runMinutes) * 60_000));
+    sessionStorage.setItem(K.startsAt, String(Date.now() + wait));
+    waitThenGo();
+  }
+
+  function waitThenGo() {
+    const readyAt = Number(sessionStorage.getItem(K.startsAt) || 0);
+    const wait = readyAt - Date.now();
     if (wait > 0) {
-      const readyAt = Date.now() + wait;
+      nextActionAt = readyAt;
       setStatus(`Waiting until ${settings.startAt}...`);
       clearInterval(countdownTimer);
       countdownTimer = setInterval(() => {
@@ -588,18 +617,51 @@
     go();
   }
 
-  function stop() {
-    sessionStorage.setItem(K.active, 'false');
+  function pauseTimers() {
     clearTimeout(retryTimer);
     clearTimeout(startTimer);
     clearInterval(countdownTimer);
-    paintButton();
     setSub('');
+  }
+
+  function stop() {
+    sessionStorage.setItem(K.active, 'false');
+    pauseTimers();
+    paintButton();
+    heartbeat();
+  }
+
+  // Watchdogs
+  // ok to send the tab back to the search? never on checkout
+  const recoverable = () =>
+    isActive() && !isDone() && sessionStorage.getItem(K.phase) !== 'sale' && !salePassedPage();
+
+  // lets the background reload the tab if this page dies
+  function heartbeat() {
+    let msg = { type: 'unwatch' };
+    try {
+      if (recoverable()) msg = { type: 'watch', url: searchUrl(), staleMs: CONFIG.stallMs };
+    } catch (_) {}
+    try {
+      chrome.runtime.sendMessage(msg).catch(() => {});
+    } catch (_) {} // extension reloaded while the tab stayed open
+  }
+
+  // page is alive but nothing is happening
+  function watchdog() {
+    if (!recoverable()) return;
+    const quietSince = Math.max(lastProgress, nextActionAt);
+    if (Date.now() - quietSince < CONFIG.stallMs) return;
+    setStatus('Watcher stalled - reloading the search.');
+    sessionStorage.setItem(K.soft, '0');
+    location.href = searchUrl();
   }
 
   function reset() {
     stop();
-    for (const k of [K.attempts, K.done, K.phase, K.soft, K.round, K.current]) sessionStorage.removeItem(k);
+    for (const k of [K.attempts, K.done, K.phase, K.soft, K.round, K.current, K.sale, K.offPage]) {
+      sessionStorage.removeItem(k);
+    }
     clearBackoff();
     setStatus('Idle.');
   }
@@ -609,6 +671,7 @@
   const inputs = [];
 
   function setStatus(msg) {
+    lastProgress = Date.now();
     if (statusEl) statusEl.textContent = msg;
     console.log('[cp-watch]', msg);
   }
@@ -834,18 +897,36 @@
 
   // Boot
   injectPanel();
+  heartbeat();
+  setInterval(() => {
+    heartbeat();
+    watchdog();
+  }, CONFIG.heartbeatMs);
 
   if (sessionStorage.getItem(K.phase) === 'sale') {
     // page changed while waiting for the sale result
     setStatus('Checking sale result...');
+    try {
+      lastSale = lastSale || JSON.parse(sessionStorage.getItem(K.sale) || 'null');
+    } catch (_) {}
     waitFor(() => {
       if (lastSale) return lastSale.ok ? 'ok' : 'fail';
       if (saleFailedPage()) return 'fail';
       if (salePassedPage()) return 'ok';
       return null;
-    }, 30_000).then(settleSale);
+    }, 10_000).then(settleSale);
   } else if (isActive() && !isDone()) {
-    setStatus(`Resuming - attempt ${attempts() + 1}...`);
-    setTimeout(runAttempt, 1000);
+    if (Number(sessionStorage.getItem(K.startsAt) || 0) > Date.now()) {
+      waitThenGo(); // reloaded during the "Start at" wait
+    } else if (salePassedPage()) {
+      // don't touch checkout pages
+      setStatus('On a checkout page - leaving it alone.');
+    } else if (!onTargetPage()) {
+      setStatus('Off the results page, going back...');
+      recoverOffPage();
+    } else {
+      setStatus(`Resuming - attempt ${attempts() + 1}...`);
+      setTimeout(runAttempt, 1000);
+    }
   }
 })();

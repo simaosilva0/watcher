@@ -20,6 +20,19 @@ Keeps retrying a cp.pt booking for one or more departures and pings your phone (
 9. **Run (min)** - stop after this many minutes (max 300) and send a "stopped" notification.
 10. **Test ntfy**, then **Start watching**. Leave the tab open.
 
+## What it does when things go wrong
+
+Anything that isn't a checkout page means "keep trying":
+
+- **cp.pt redirects to the home page or another page.** It goes back to the search. If that keeps happening, the wait grows, up to 5 min.
+- **Empty results ("Não foram encontrados resultados").** It reloads, waiting at most ~35 s.
+- **A sale with no clear answer.** It retries. A seat only counts as secured when cp.pt's `/sale` request succeeds, and that result is saved even if the page navigates away.
+- **The loop stalls for 2 min.** It reloads the search.
+- **The page dies** (Chrome error page, crashed or unloaded tab). The extension reloads the search in that tab within ~2.5 min.
+- **A reload during the "Start at" wait.** It keeps waiting.
+
+It never navigates away from a checkout page or in the middle of a sale. Hidden tabs get their timers slowed by Chrome, so keep the cp.pt tab visible, ideally in its own window.
+
 Drag the panel by its title to move it; click the title to hide the settings. Settings are saved in the browser and survive restarts.
 
 ## Share
