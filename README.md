@@ -7,6 +7,14 @@ Keeps retrying a cp.pt booking for one or more departures and pings your phone (
 1. Unzip the folder somewhere permanent.
 2. Open `chrome://extensions`, turn on **Developer mode**, click **Load unpacked**, pick the folder.
 
+## Update
+
+1. Replace the files in that folder with the new ones.
+2. In `chrome://extensions`, press the reload button on **CP Train Watcher**.
+3. Refresh the cp.pt tab and press **Start watching** again. A tab left open from before keeps running the old code.
+
+Notifications include the version (e.g. `v5.4`), so you can tell which one is running.
+
 ## Set up
 
 1. Install the ntfy app on your phone.
@@ -20,20 +28,46 @@ Keeps retrying a cp.pt booking for one or more departures and pings your phone (
 9. **Run (min)** - stop after this many minutes (max 300) and send a "stopped" notification.
 10. **Test ntfy**, then **Start watching**. Leave the tab open.
 
+Drag the panel by its title to move it; click the title to hide the settings. Settings are saved in the browser and survive restarts.
+
 ## What it does when things go wrong
 
 Anything that isn't a checkout page means "keep trying":
 
 - **cp.pt redirects to the home page or another page.** It goes back to the search. If that keeps happening, the wait grows, up to 5 min.
 - **Empty results ("Não foram encontrados resultados").** It reloads, waiting at most ~35 s.
+- **"Avançar para compra" lands on the home page.** cp.pt dropped the purchase before the sale was made, so no seat is held. It reloads the search right away, which also gets a fresh cp.pt session.
 - **A sale with no clear answer.** It retries. A seat only counts as secured when cp.pt's `/sale` request succeeds, and that result is saved even if the page navigates away.
+- **Terms box won't tick, or "Avançar para compra" stays disabled.** It retries.
 - **The loop stalls for 2 min.** It reloads the search.
 - **The page dies** (Chrome error page, crashed or unloaded tab). The extension reloads the search in that tab within ~2.5 min.
 - **A reload during the "Start at" wait.** It keeps waiting.
 
 It never navigates away from a checkout page or in the middle of a sale. Hidden tabs get their timers slowed by Chrome, so keep the cp.pt tab visible, ideally in its own window.
 
-Drag the panel by its title to move it; click the title to hide the settings. Settings are saved in the browser and survive restarts.
+## Notifications
+
+| Notification | Meaning |
+| --- | --- |
+| CP seat secured | A seat is held in checkout. Pay now; it expires. The watcher has stopped. |
+| CP watcher stopped | **Run (min)** ran out without a seat. |
+| CP watcher throttled | cp.pt stopped returning results. The watcher slows down and keeps going. |
+| CP watcher bounced | cp.pt keeps sending the tab away from the results. Still retrying. |
+| CP watcher test | Sent by **Test ntfy**. |
+
+Small hiccups don't send a notification; the panel's status line shows them.
+
+## Tuning
+
+The `CONFIG` block at the top of `content.js` holds the timings:
+
+- `nextTripDelayMs` - gap before trying the next departure in the same round (default 700 ms).
+- `minDelaySec` - lowest allowed **Every (s)**. Below 5, cp.pt is more likely to throttle you.
+- `maxEmptyBackoffLevel` - how far the wait may grow after empty results pages.
+- `stallMs` - how long without progress before the watchdogs reload the search (default 2 min).
+- `acceptTerms` / `autoAdvanceToPayment` - set to `false` to tick the terms or press "Avançar para compra" yourself.
+
+Reload the extension after editing.
 
 ## Share
 
