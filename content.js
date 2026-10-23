@@ -909,12 +909,14 @@
     try {
       lastSale = lastSale || JSON.parse(sessionStorage.getItem(K.sale) || 'null');
     } catch (_) {}
+    // landed on the home page, cp.pt dropped the purchase
+    const onHome = /^\/(pt|en)?\/?$/i.test(location.pathname);
     waitFor(() => {
       if (lastSale) return lastSale.ok ? 'ok' : 'fail';
       if (saleFailedPage()) return 'fail';
       if (salePassedPage()) return 'ok';
       return null;
-    }, 10_000).then(settleSale);
+    }, onHome ? 500 : 10_000).then(settleSale);
   } else if (isActive() && !isDone()) {
     if (Number(sessionStorage.getItem(K.startsAt) || 0) > Date.now()) {
       waitThenGo(); // reloaded during the "Start at" wait
