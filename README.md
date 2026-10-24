@@ -13,7 +13,7 @@ Keeps retrying a cp.pt booking for one or more departures and pings your phone (
 2. In `chrome://extensions`, press the reload button on **CP Train Watcher**.
 3. Refresh the cp.pt tab and press **Start watching** again. A tab left open from before keeps running the old code.
 
-Notifications include the version (e.g. `v5.4`), so you can tell which one is running.
+The panel title and notifications show the version (e.g. `v5.5`), so you can tell which one is running.
 
 ## Set up
 
@@ -39,6 +39,7 @@ Anything that isn't a checkout page means "keep trying":
 - **"Avançar para compra" lands on the home page.** cp.pt dropped the purchase before the sale was made, so no seat is held. It reloads the search right away, which also gets a fresh cp.pt session.
 - **A sale with no clear answer.** It retries. A seat only counts as secured when cp.pt's `/sale` request succeeds, and that result is saved even if the page navigates away.
 - **Terms box won't tick, or "Avançar para compra" stays disabled.** It retries.
+- **cp.pt hangs on "Por favor aguarde um momento...".** After 20 s it reloads the search.
 - **The loop stalls for 2 min.** It reloads the search.
 - **The page dies** (Chrome error page, crashed or unloaded tab). The extension reloads the search in that tab within ~2.5 min.
 - **A reload during the "Start at" wait.** It keeps waiting.
@@ -64,6 +65,7 @@ The `CONFIG` block at the top of `content.js` holds the timings:
 - `nextTripDelayMs` - gap before trying the next departure in the same round (default 700 ms).
 - `minDelaySec` - lowest allowed **Every (s)**. Below 5, cp.pt is more likely to throttle you.
 - `maxEmptyBackoffLevel` - how far the wait may grow after empty results pages.
+- `loaderMaxMs` - how long cp.pt's loading screen may show before a reload (default 20 s).
 - `stallMs` - how long without progress before the watchdogs reload the search (default 2 min).
 - `acceptTerms` / `autoAdvanceToPayment` - set to `false` to tick the terms or press "Avançar para compra" yourself.
 

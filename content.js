@@ -32,6 +32,8 @@
     // watchdogs
     // reload the search if nothing happens for this long
     stallMs: 120_000,
+    // reload if the "Por favor aguarde" spinner is stuck for this long
+    loaderMaxMs: 20_000,
     heartbeatMs: 20_000,
 
     // timeouts
@@ -491,6 +493,7 @@
   // Retry scheduling
   // back to the results without a full reload
   function softRetry() {
+    if (loaderVisible()) return false; // stuck, needs a full reload
     const back =
       byText(document, 'button, a', /voltar aos resultados/i) ||
       byText(document, 'button, a', /refazer pesquisa/i);
@@ -647,6 +650,23 @@
     } catch (_) {} // extension reloaded while the tab stayed open
   }
 
+  // cp.pt full page spinner
+  const loaderVisible = () =>
+    /por favor aguarde um momento|please wait a moment/i.test(
+      (document.body ? document.body.innerText || '' : '').slice(0, 3000)
+    );
+
+  let loaderSince = 0;
+  function loaderWatch() {
+    if (!loaderVisible()) return (loaderSince = 0);
+    if (!loaderSince) loaderSince = Date.now();
+    if (!recoverable() || Date.now() - loaderSince < CONFIG.loaderMaxMs) return;
+    loaderSince = 0;
+    setStatus('cp.pt stuck on "Por favor aguarde" - reloading the search.');
+    sessionStorage.setItem(K.soft, '0');
+    location.href = searchUrl();
+  }
+
   // page is alive but nothing is happening
   function watchdog() {
     if (!recoverable()) return;
@@ -686,7 +706,7 @@
     for (const el of inputs) el.disabled = on; // no settings changes mid-run
   }
   function paintSettings() {
-    if (titleEl) titleEl.textContent = `CP watcher - ${settings.date || '-'} ${settings.targetTime || ''}`;
+    if (titleEl) titleEl.textContent = `CP watcher v${chrome.runtime.getManifest().version} - ${settings.date || '-'} ${settings.targetTime || ''}`;
     if (pageEl) {
       pageEl.textContent = settings.searchUrl ? 'Start page set' : 'No start page yet';
       pageEl.title = settings.searchUrl;
@@ -898,6 +918,7 @@
   // Boot
   injectPanel();
   heartbeat();
+  setInterval(loaderWatch, 2000);
   setInterval(() => {
     heartbeat();
     watchdog();

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "CP Train Watcher",
-  "version": "5.4",
+  "version": "5.5",
   "description": "Retries a CP.pt booking for one or more departure times and alerts via ntfy the moment a seat is actually secured.",
   "permissions": ["alarms", "storage"],
   "host_permissions": ["https://ntfy.sh/*"],
