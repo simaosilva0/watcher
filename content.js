@@ -14,11 +14,10 @@
   const CONFIG = {
     // pacing
     // delay between attempts comes from the panel, clamped to this range,
-    // plus up to 80% random jitter
-    minDelaySec: 5,
+    // plus random jitter (4s -> 4-8s)
+    minDelaySec: 4,
     maxDelaySec: 300,
-    // shorter delay when moving on to the next time in the same round
-    nextTripDelayMs: 700,
+    jitter: 1.0, // up to +100%
     // max run length in minutes
     maxRunMinutes: 300,
     hardReloadEvery: 25, // full reload every N soft retries, to refresh the token
@@ -58,7 +57,7 @@
     ntfyTopic: '',
     ntfyToken: '', // optional, for protected topics
     startAt: '', // optional HH:MM to hold off until
-    delaySec: '5', // gap between attempts
+    delaySec: '4', // gap between attempts
     runMinutes: '60', // stop after this long
     collapsed: false,
     pos: null, // { left, top } after the panel is dragged
@@ -514,10 +513,8 @@
   function scheduleRetry() {
     if (!isActive() || isDone()) return;
 
-    // short delay if there are still times left in this round
     const nextTrip = roundLeft().length > 0;
-    const gap = nextTrip ? CONFIG.nextTripDelayMs : Number(settings.delaySec) * 1000;
-    const base = gap * (1 + Math.random() * 0.8);
+    const base = Number(settings.delaySec) * 1000 * (1 + Math.random() * CONFIG.jitter);
     const level = backoffLevel();
     const delay = Math.min(base * Math.pow(CONFIG.backoffFactor, level), CONFIG.maxBackoffMs);
     const readyAt = Date.now() + delay;
@@ -877,7 +874,7 @@
       min: CONFIG.minDelaySec,
       max: CONFIG.maxDelaySec,
     });
-    delayField.input.title = `Seconds between rounds (min ${CONFIG.minDelaySec}), randomised up to x1.8`;
+    delayField.input.title = `Seconds between attempts (min ${CONFIG.minDelaySec}), randomised up to x2`;
     const runField = mkField('Run (min)', 'runMinutes', 'number', null, { min: 1, max: CONFIG.maxRunMinutes });
     runField.input.title = `Stop after this many minutes (max ${CONFIG.maxRunMinutes})`;
 

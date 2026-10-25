@@ -13,18 +13,18 @@ Keeps retrying a cp.pt booking for one or more departures and pings your phone (
 2. In `chrome://extensions`, press the reload button on **CP Train Watcher**.
 3. Refresh the cp.pt tab and press **Start watching** again. A tab left open from before keeps running the old code.
 
-The panel title and notifications show the version (e.g. `v5.5`), so you can tell which one is running.
+The panel title and notifications show the version (e.g. `v5.6`), so you can tell which one is running.
 
 ## Set up
 
 1. Install the ntfy app on your phone.
 2. On cp.pt, search your route and open the results page. The watcher panel appears top-right.
 3. **Use this page** - saves it as the page the watcher resets to (also fills the date).
-4. **Date** / **Departs** - the train(s) you want, 24h departure times separated by commas, in order of preference (e.g. `08:15, 19:39, 21:10`). Each round it tries them in that order. When one is full it moves to the next after about a second, with no new search. The full wait only comes after every time has been tried. It stops at the first seat it secures.
+4. **Date** / **Departs** - the train(s) you want, 24h departure times separated by commas, in order of preference (e.g. `08:15, 19:39, 21:10`). It cycles through them in that order, one attempt per wait, then starts over. It stops at the first seat it secures.
 5. **ntfy topic** - press **New** for a random topic and subscribe to it in the app. Topics on ntfy.sh are public by name, so keep it hard to guess.
 6. **ntfy token** - only if your topic is protected (an ntfy.sh access token, starts with `tk_`). Leave empty otherwise.
 7. **Start at** - optional; waits until that time before the first attempt.
-8. **Every (s)** - seconds between rounds (min 5, randomised up to x1.8). Faster risks getting throttled by cp.pt.
+8. **Every (s)** - seconds between attempts (min 4, randomised up to x2, so 4 -> 4-8 s). Faster gets you blocked by cp.pt: it drops all connections from your address to its booking server, and results pages stop loading.
 9. **Run (min)** - stop after this many minutes (max 300) and send a "stopped" notification.
 10. **Test ntfy**, then **Start watching**. Leave the tab open.
 
@@ -62,8 +62,8 @@ Small hiccups don't send a notification; the panel's status line shows them.
 
 The `CONFIG` block at the top of `content.js` holds the timings:
 
-- `nextTripDelayMs` - gap before trying the next departure in the same round (default 700 ms).
-- `minDelaySec` - lowest allowed **Every (s)**. Below 5, cp.pt is more likely to throttle you.
+- `jitter` - random extra on top of **Every (s)** (default 1.0, i.e. up to x2).
+- `minDelaySec` - lowest allowed **Every (s)** (default 4).
 - `maxEmptyBackoffLevel` - how far the wait may grow after empty results pages.
 - `loaderMaxMs` - how long cp.pt's loading screen may show before a reload (default 20 s).
 - `stallMs` - how long without progress before the watchdogs reload the search (default 2 min).
